@@ -1,0 +1,20 @@
+{
+  "name": "pdf-markup-sharing",
+  "version": "1.0.0",
+  "description": "PDF図面リアルタイムマークアップ共有アプリ",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
+    "socket.io": "^4.8.3",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

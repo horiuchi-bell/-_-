@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>PDF マークアップ</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; background: #1e293b; }
+
+    /* ===== ユーザー情報モーダル ===== */
+    #user-modal {
+      position: fixed; inset: 0; z-index: 1000;
+      background: rgba(0,0,0,0.65);
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px;
+    }
+    #user-modal .modal-box {
+      background: #fff; border-radius: 16px; padding: 32px 28px;
+      max-width: 400px; width: 100%;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.3);
+    }
+    #user-modal h2 { font-size: 18px; font-weight: 700; margin-bottom: 20px; color: #1a2236; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+    .form-group input, .form-group select {
+      width: 100%; padding: 10px 12px; border: 1.5px solid #d1d5db;
+      border-radius: 8px; font-size: 15px; color: #111; outline: none;
+      min-height: 44px;
+    }
+    .form-group input:focus, .form-group select:focus { border-color: #2563eb; }
+    #user-modal .btn-start {
+      width: 100%; padding: 12px; background: #2563eb; color: #fff;
+      border: none; border-radius: 10px; font-size: 16px; font-weight: 700;
+      cursor: pointer; min-height: 48px; margin-top: 4px;
+    }
+    #user-modal .btn-start:hover { background: #1d4ed8; }
+
+    /* ===== メインレイアウト ===== */
+    #app { display: flex; flex-direction: column; height: 100%; }
+
+    /* ===== ツールバー ===== */
+    #toolbar {
+      flex-shrink: 0;
+      background: #1e293b;
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      border-bottom: 1px solid #334155;
+      min-height: 58px;
+    }
+    #toolbar::-webkit-scrollbar { display: none; }
+
+    .tb-sep { width: 1px; background: #334155; height: 32px; flex-shrink: 0; margin: 0 2px; }
+
+    /* カテゴリボタン */
+    .cat-btn {
+      padding: 6px 12px; border-radius: 20px; border: 2px solid transparent;
+      font-size: 13px; font-weight: 700; cursor: pointer;
+      white-space: nowrap; min-height: 36px; min-width: 56px;
+      transition: opacity 0.15s, transform 0.1s;
+      flex-shrink: 0;
+    }
+    .cat-btn:active { transform: scale(0.95); }
+    .cat-btn.active { border-color: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,0.25); }
+
+    #cat-closed  { background: rgba(220,50,50,0.85);  color: #fff; }
+    #cat-setting { background: rgba(255,150,0,0.85);  color: #fff; }
+    #cat-hosha   { background: rgba(50,180,80,0.85);  color: #fff; }
+    #cat-custom  { background: rgba(130,80,220,0.85); color: #fff; }
+
+    /* カラーピッカー */
+    #color-picker {
+      width: 36px; height: 36px; border-radius: 50%; border: 2px solid #fff;
+      cursor: pointer; padding: 0; flex-shrink: 0; background: none;
+    }
+
+    /* 線幅 */
+    .lw-btn {
+      background: #334155; border: 2px solid transparent; border-radius: 8px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      width: 36px; height: 36px; flex-shrink: 0; transition: border-color 0.15s;
+    }
+    .lw-btn.active { border-color: #60a5fa; }
+    .lw-btn svg { display: block; }
+
+    /* ツールボタン（消しゴム・解除） */
+    .tool-btn {
+      padding: 6px 12px; border-radius: 8px; border: 2px solid #475569;
+      background: #334155; color: #e2e8f0;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      white-space: nowrap; min-height: 36px; flex-shrink: 0;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .tool-btn:hover { background: #475569; }
+    .tool-btn.active { background: #7c3aed; border-color: #a78bfa; color: #fff; }
+    #release-btn { border-color: #dc2626; color: #fca5a5; }
+    #release-btn.active { background: #dc2626; border-color: #ef4444; color: #fff; }
+    #release-btn:hover { background: #7f1d1d; }
+
+    /* ズーム */
+    .zoom-btn {
+      background: #334155; border: 2px solid #475569; border-radius: 8px;
+      color: #e2e8f0; font-size: 17px; font-weight: 700;
+      cursor: pointer; width: 36px; height: 36px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .zoom-btn:hover { background: #475569; }
+    #zoom-label {
+      font-size: 12px; color: #94a3b8; min-width: 36px; text-align: center; flex-shrink: 0;
+    }
+
+    /* ===== キャンバスエリア ===== */
+    #canvas-area {
+      flex: 1; overflow: auto; position: relative;
+      display: flex; align-items: flex-start; justify-content: flex-start;
+      touch-action: none; /* 後でピンチ時に変更 */
+    }
+
+    #canvas-wrapper {
+      position: relative; flex-shrink: 0;
+      margin: 16px auto;
+    }
+    #pdf-canvas, #markup-canvas {
+      position: absolute; top: 0; left: 0; display: block;
+    }
+    #pdf-canvas { z-index: 1; background: #fff; }
+    #markup-canvas { z-index: 2; cursor: crosshair; }
+    #markup-canvas.select-mode { cursor: pointer; }
+    #markup-canvas.eraser-mode { cursor: cell; }
+
+    /* ===== ページナビ ===== */
+    #nav-bar {
+      flex-shrink: 0;
+      background: #1e293b;
+      border-top: 1px solid #334155;
+      padding: 8px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      min-height: 52px;
+    }
+    .nav-btn {
+      padding: 8px 20px; background: #334155; color: #e2e8f0;
+      border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
+      cursor: pointer; min-height: 40px; min-width: 72px;
+    }
+    .nav-btn:hover { background: #475569; }
+    .nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #page-info { font-size: 15px; color: #e2e8f0; font-weight: 600; }
+    #qr-btn {
+      padding: 8px 14px; background: #334155; color: #e2e8f0;
+      border: none; border-radius: 8px; font-size: 13px;
+      cursor: pointer; min-height: 40px;
+    }
+    #qr-btn:hover { background: #475569; }
+
+    /* ===== 解除選択バナー ===== */
+    #release-banner {
+      display: none; position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%);
+      z-index: 200; background: #7f1d1d; color: #fff;
+      padding: 10px 18px; border-radius: 12px;
+      font-size: 14px; font-weight: 700;
+      display: none; align-items: center; gap: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      white-space: nowrap;
+    }
+    #release-banner.visible { display: flex; }
+    #release-count { font-size: 18px; font-weight: 900; }
+    #release-confirm { padding: 8px 16px; background: #dc2626; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; }
+    #release-cancel  { padding: 8px 16px; background: #374151; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+
+    /* ===== QRモーダル ===== */
+    #qr-modal {
+      display: none; position: fixed; inset: 0; z-index: 500;
+      background: rgba(0,0,0,0.7);
+      align-items: center; justify-content: center;
+    }
+    #qr-modal.visible { display: flex; }
+    #qr-modal .qr-box {
+      background: #fff; border-radius: 16px; padding: 28px 24px;
+      text-align: center; max-width: 280px; width: 100%;
+    }
+    #qr-modal h3 { font-size: 15px; font-weight: 700; margin-bottom: 12px; color: #1a2236; }
+    #qr-modal-url { font-size: 11px; color: #4b5563; word-break: break-all; margin-top: 10px; }
+    #qr-modal-close { margin-top: 16px; padding: 10px 24px; background: #374151; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+
+    /* ===== 接続状態バッジ ===== */
+    #conn-badge {
+      position: fixed; top: 66px; right: 10px; z-index: 300;
+      font-size: 11px; padding: 3px 8px; border-radius: 10px;
+      font-weight: 600; pointer-events: none;
+    }
+    #conn-badge.connected { background: #166534; color: #bbf7d0; }
+    #conn-badge.disconnected { background: #7f1d1d; color: #fecaca; }
+
+    /* ===== トースト ===== */
+    #toast {
+      display: none; position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+      z-index: 400; background: #1e293b; color: #e2e8f0;
+      padding: 10px 20px; border-radius: 24px; font-size: 14px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    }
+    #toast.visible { display: block; }
+
+    /* ===== ローディング ===== */
+    #loading {
+      position: fixed; inset: 0; z-index: 900;
+      background: #1e293b; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 16px;
+      color: #94a3b8; font-size: 15px;
+    }
+    #loading.hidden { display: none; }
+    .spinner {
+      width: 44px; height: 44px; border: 4px solid #334155;
+      border-top-color: #2563eb; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<!-- ローディング -->
+<div id="loading"><div class="spinner"></div><span>読み込み中...</span></div>
+
+<!-- ユーザー情報モーダル -->
+<div id="user-modal" style="display:none;">
+  <div class="modal-box">
+    <h2>参加者情報の入力</h2>
+    <div class="form-group">
+      <label for="user-name">氏名</label>
+      <input type="text" id="user-name" placeholder="例：田中 太郎" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label for="user-role">役割</label>
+      <select id="user-role">
+        <option value="検修責任者">検修責任者</option>
+        <option value="線閉責任者">線閉責任者</option>
+        <option value="工事指揮者">工事指揮者</option>
+        <option value="その他">その他</option>
+      </select>
+    </div>
+    <button class="btn-start" id="user-start-btn">セッションに参加</button>
+  </div>
+</div>
+
+<!-- メインUI -->
+<div id="app">
+
+  <!-- ツールバー -->
+  <div id="toolbar">
+    <!-- カテゴリ -->
+    <button class="cat-btn active" id="cat-closed"  data-category="線閉中">線閉中</button>
+    <button class="cat-btn"        id="cat-setting" data-category="設定中">設定中</button>
+    <button class="cat-btn"        id="cat-hosha"   data-category="保車">保車</button>
+    <button class="cat-btn"        id="cat-custom"  data-category="custom">カスタム</button>
+
+    <div class="tb-sep"></div>
+
+    <!-- カラーピッカー -->
+    <input type="color" id="color-picker" value="#dc3232" title="色を変更">
+
+    <div class="tb-sep"></div>
+
+    <!-- 線幅 -->
+    <button class="lw-btn active" data-lw="4" title="細">
+      <svg width="24" height="24"><line x1="4" y1="12" x2="20" y2="12" stroke="#e2e8f0" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    <button class="lw-btn" data-lw="8" title="中">
+      <svg width="24" height="24"><line x1="4" y1="12" x2="20" y2="12" stroke="#e2e8f0" stroke-width="5" stroke-linecap="round"/></svg>
+    </button>
+    <button class="lw-btn" data-lw="16" title="太">
+      <svg width="24" height="24"><line x1="4" y1="12" x2="20" y2="12" stroke="#e2e8f0" stroke-width="10" stroke-linecap="round"/></svg>
+    </button>
+
+    <div class="tb-sep"></div>
+
+    <!-- 消しゴム -->
+    <button class="tool-btn" id="eraser-btn">消しゴム</button>
+
+    <!-- 解除（線閉責任者のみ表示） -->
+    <button class="tool-btn" id="release-btn" style="display:none;">解除</button>
+
+    <div class="tb-sep"></div>
+
+    <!-- ズーム -->
+    <button class="zoom-btn" id="zoom-out-btn">－</button>
+    <span id="zoom-label">100%</span>
+    <button class="zoom-btn" id="zoom-in-btn">＋</button>
+    <button class="zoom-btn" id="zoom-reset-btn" title="リセット" style="font-size:13px;">⟳</button>
+  </div>
+
+  <!-- キャンバスエリア -->
+  <div id="canvas-area">
+    <div id="canvas-wrapper">
+      <canvas id="pdf-canvas"></canvas>
+      <canvas id="markup-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- ページナビ -->
+  <div id="nav-bar">
+    <button class="nav-btn" id="prev-btn">◀ 前</button>
+    <span id="page-info">1 / 1</span>
+    <button class="nav-btn" id="next-btn">次 ▶</button>
+    <button id="qr-btn">QR</button>
+  </div>
+</div>
+
+<!-- 解除選択バナー -->
+<div id="release-banner">
+  <span><span id="release-count">0</span>件選択中</span>
+  <button id="release-confirm">解除を確定</button>
+  <button id="release-cancel">キャンセル</button>
+</div>
+
+<!-- 接続状態バッジ -->
+<div id="conn-badge" class="disconnected">切断</div>
+
+<!-- QRモーダル -->
+<div id="qr-modal">
+  <div class="qr-box">
+    <h3>このセッションを共有</h3>
+    <div id="qr-modal-canvas"></div>
+    <p id="qr-modal-url"></p>
+    <button id="qr-modal-close">閉じる</button>
+  </div>
+</div>
+
+<!-- トースト -->
+<div id="toast"></div>
+
+<!-- PDF.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs" type="module"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+
+<script>
+// ===== 初期化 =====
+const SESSION_ID = location.pathname.split('/').pop();
+const STORAGE_KEY = 'pdf_markup_user';
+
+// ===== カテゴリ定義 =====
+const CATEGORIES = {
+  '線閉中': { color: 'rgba(220,50,50,0.45)',   hex: '#dc3232' },
+  '設定中': { color: 'rgba(255,150,0,0.45)',   hex: '#ff9600' },
+  '保車':   { color: 'rgba(50,180,80,0.45)',   hex: '#32b450' },
+  'custom': { color: 'rgba(130,80,220,0.45)', hex: '#8250dc' },
+};
+
+// ===== 状態 =====
+let user = null;
+let currentCategory = '線閉中';
+let currentLineWidth = 4;
+let currentTool = 'draw'; // 'draw' | 'erase'
+let isReleaseMode = false;
+let selectedForRelease = new Set();
+
+let pdfDoc = null;
+let currentPage = 1;
+let totalPages = 1;
+let scale = 1.0;
+const SCALE_STEP = 0.25;
+const SCALE_MIN = 0.5;
+const SCALE_MAX = 4.0;
+
+// strokesはMap<strokeId, stroke>
+const strokes = new Map();
+
+// 描画中ストローク
+let activeStroke = null;
+let isDrawing = false;
+
+// ピンチ用
+let pinchStartDist = null;
+let pinchStartScale = 1.0;
+
+// ===== DOM =====
+const loading       = document.getElementById('loading');
+const userModal     = document.getElementById('user-modal');
+const userNameInput = document.getElementById('user-name');
+const userRoleSelect= document.getElementById('user-role');
+const userStartBtn  = document.getElementById('user-start-btn');
+
+const pdfCanvas     = document.getElementById('pdf-canvas');
+const markupCanvas  = document.getElementById('markup-canvas');
+const canvasWrapper = document.getElementById('canvas-wrapper');
+const canvasArea    = document.getElementById('canvas-area');
+const pdfCtx        = pdfCanvas.getContext('2d');
+const markupCtx     = markupCanvas.getContext('2d');
+
+const catBtns       = document.querySelectorAll('.cat-btn');
+const colorPicker   = document.getElementById('color-picker');
+const lwBtns        = document.querySelectorAll('.lw-btn');
+const eraserBtn     = document.getElementById('eraser-btn');
+const releaseBtn    = document.getElementById('release-btn');
+const zoomInBtn     = document.getElementById('zoom-in-btn');
+const zoomOutBtn    = document.getElementById('zoom-out-btn');
+const zoomResetBtn  = document.getElementById('zoom-reset-btn');
+const zoomLabel     = document.getElementById('zoom-label');
+
+const prevBtn       = document.getElementById('prev-btn');
+const nextBtn       = document.getElementById('next-btn');
+const pageInfo      = document.getElementById('page-info');
+const qrBtn         = document.getElementById('qr-btn');
+
+const releaseBanner = document.getElementById('release-banner');
+const releaseCount  = document.getElementById('release-count');
+const releaseConfirm= document.getElementById('release-confirm');
+const releaseCancel = document.getElementById('release-cancel');
+
+const connBadge     = document.getElementById('conn-badge');
+const qrModal       = document.getElementById('qr-modal');
+const qrModalCanvas = document.getElementById('qr-modal-canvas');
+const qrModalUrl    = document.getElementById('qr-modal-url');
+const qrModalClose  = document.getElementById('qr-modal-close');
+const toastEl       = document.getElementById('toast');
+
+// ===== Socket.IO =====
+const socket = io();
+
+socket.on('connect', () => {
+  connBadge.textContent = '接続中';
+  connBadge.className = 'connected';
+  if (user) joinSession();
+});
+socket.on('disconnect', () => {
+  connBadge.textContent = '切断';
+  connBadge.className = 'disconnected';
+});
+
+socket.on('session-state', ({ strokes: remoteStrokes }) => {
+  strokes.clear();
+  remoteStrokes.forEach(s => strokes.set(s.id, s));
+  redrawMarkup();
+  loading.classList.add('hidden');
+});
+
+socket.on('stroke-added', (stroke) => {
+  strokes.set(stroke.id, stroke);
+  redrawMarkup();
+});
+
+socket.on('stroke-removed', ({ strokeId }) => {
+  strokes.delete(strokeId);
+  redrawMarkup();
+});
+
+socket.on('strokes-released', ({ strokeIds, releasedBy }) => {
+  strokeIds.forEach(id => {
+    const s = strokes.get(id);
+    if (s) { s.status = 'released'; s.releasedBy = releasedBy; }
+  });
+  selectedForRelease.clear();
+  redrawMarkup();
+  showToast(`${strokeIds.length}件を解除しました（${releasedBy}）`);
+});
+
+socket.on('error', ({ message }) => showToast(message));
+
+function joinSession() {
+  socket.emit('join-session', { sessionId: SESSION_ID, user });
+}
+
+// ===== ユーザー情報 =====
+function loadUser() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) return JSON.parse(stored);
+  } catch {}
+  return null;
+}
+function saveUser(u) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
+}
+
+function initUser() {
+  const stored = loadUser();
+  if (stored && stored.name) {
+    user = stored;
+    applyUserRole();
+    startSession();
+  } else {
+    loading.classList.add('hidden');
+    userModal.style.display = 'flex';
+    userNameInput.focus();
+  }
+}
+
+userStartBtn.addEventListener('click', () => {
+  const name = userNameInput.value.trim();
+  if (!name) { userNameInput.focus(); return; }
+  user = {
+    id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36),
+    name,
+    role: userRoleSelect.value,
+  };
+  saveUser(user);
+  userModal.style.display = 'none';
+  loading.classList.remove('hidden');
+  applyUserRole();
+  startSession();
+});
+
+function applyUserRole() {
+  if (user.role === '線閉責任者') {
+    releaseBtn.style.display = '';
+  }
+}
+
+async function startSession() {
+  // PDF読み込み
+  const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs');
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs';
+
+  try {
+    pdfDoc = await pdfjsLib.getDocument(`/api/sessions/${SESSION_ID}/pdf`).promise;
+    totalPages = pdfDoc.numPages;
+    await renderPage(currentPage);
+  } catch (e) {
+    showToast('PDFの読み込みに失敗しました');
+    loading.classList.add('hidden');
+    return;
+  }
+
+  // Socket接続後に参加
+  if (socket.connected) {
+    joinSession();
+  }
+  // connect イベントでも joinSession() が呼ばれる
+}
+
+// ===== PDF レンダリング =====
+async function renderPage(pageNum) {
+  const page = await pdfDoc.getPage(pageNum);
+  const viewport = page.getViewport({ scale });
+  const w = viewport.width;
+  const h = viewport.height;
+
+  pdfCanvas.width  = w; pdfCanvas.height  = h;
+  markupCanvas.width = w; markupCanvas.height = h;
+  canvasWrapper.style.width  = w + 'px';
+  canvasWrapper.style.height = h + 'px';
+  pdfCanvas.style.width  = w + 'px'; pdfCanvas.style.height  = h + 'px';
+  markupCanvas.style.width = w + 'px'; markupCanvas.style.height = h + 'px';
+
+  await page.render({ canvasContext: pdfCtx, viewport }).promise;
+  pageInfo.textContent = `${currentPage} / ${totalPages}`;
+  prevBtn.disabled = currentPage <= 1;
+  nextBtn.disabled = currentPage >= totalPages;
+  redrawMarkup();
+}
+
+// ===== マークアップ描画 =====
+function redrawMarkup() {
+  markupCtx.clearRect(0, 0, markupCanvas.width, markupCanvas.height);
+  const W = markupCanvas.width;
+  const H = markupCanvas.height;
+
+  for (const stroke of strokes.values()) {
+    if (stroke.status === 'released') continue;
+    if (stroke.page !== currentPage) continue;
+
+    const isSelected = selectedForRelease.has(stroke.id);
+
+    if (stroke.tool === 'erase') {
+      markupCtx.globalCompositeOperation = 'destination-out';
+      markupCtx.strokeStyle = 'rgba(0,0,0,1)';
+    } else {
+      markupCtx.globalCompositeOperation = 'source-over';
+      if (isSelected) {
+        // 選択中はハイライト
+        markupCtx.strokeStyle = 'rgba(255,255,0,0.9)';
+      } else {
+        markupCtx.strokeStyle = stroke.color;
+      }
+    }
+    markupCtx.lineWidth = stroke.lineWidth * scale;
+    markupCtx.lineCap = 'round';
+    markupCtx.lineJoin = 'round';
+
+    drawStrokePath(markupCtx, stroke.points, W, H);
+  }
+  markupCtx.globalCompositeOperation = 'source-over';
+
+  // 描画中ストローク（プレビュー）
+  if (activeStroke && activeStroke.points.length > 1) {
+    const W = markupCanvas.width, H = markupCanvas.height;
+    if (activeStroke.tool === 'erase') {
+      markupCtx.globalCompositeOperation = 'destination-out';
+      markupCtx.strokeStyle = 'rgba(0,0,0,1)';
+    } else {
+      markupCtx.globalCompositeOperation = 'source-over';
+      markupCtx.strokeStyle = activeStroke.color;
+    }
+    markupCtx.lineWidth = activeStroke.lineWidth * scale;
+    markupCtx.lineCap = 'round';
+    markupCtx.lineJoin = 'round';
+    drawStrokePath(markupCtx, activeStroke.points, W, H);
+    markupCtx.globalCompositeOperation = 'source-over';
+  }
+}
+
+function drawStrokePath(ctx, points, W, H) {
+  if (points.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x * W, points[0].y * H);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x * W, points[i].y * H);
+  }
+  ctx.stroke();
+}
+
+// ===== タッチ・マウスイベント =====
+function getCanvasPos(e) {
+  const rect = markupCanvas.getBoundingClientRect();
+  let clientX, clientY;
+  if (e.touches) {
+    clientX = e.touches[0].clientX;
+    clientY = e.touches[0].clientY;
+  } else {
+    clientX = e.clientX;
+    clientY = e.clientY;
+  }
+  return {
+    x: (clientX - rect.left) / markupCanvas.width,
+    y: (clientY - rect.top)  / markupCanvas.height,
+  };
+}
+
+function onPointerDown(e) {
+  if (e.touches && e.touches.length === 2) return; // ピンチ開始は別処理
+  if (isReleaseMode) {
+    handleReleaseSelect(e);
+    return;
+  }
+  e.preventDefault();
+  isDrawing = true;
+  const pos = getCanvasPos(e);
+  activeStroke = {
+    id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2),
+    category: currentTool === 'erase' ? 'erase' : currentCategory,
+    color: currentTool === 'erase' ? 'rgba(0,0,0,1)' : getCurrentColor(),
+    lineWidth: currentLineWidth,
+    tool: currentTool,
+    points: [pos],
+    page: currentPage,
+    ownerId: user.id,
+    ownerName: user.name,
+    ownerRole: user.role,
+    status: 'active',
+  };
+}
+
+function onPointerMove(e) {
+  if (!isDrawing || !activeStroke) return;
+  if (e.touches && e.touches.length === 2) return;
+  e.preventDefault();
+  const pos = getCanvasPos(e);
+  activeStroke.points.push(pos);
+  redrawMarkup();
+}
+
+function onPointerUp(e) {
+  if (!isDrawing || !activeStroke) return;
+  isDrawing = false;
+  if (activeStroke.points.length >= 2) {
+    strokes.set(activeStroke.id, activeStroke);
+    socket.emit('stroke-add', activeStroke);
+  }
+  activeStroke = null;
+  redrawMarkup();
+}
+
+// 解除モードでのストローク選択
+function handleReleaseSelect(e) {
+  e.preventDefault();
+  const pos = getCanvasPos(e);
+  const W = markupCanvas.width;
+  const H = markupCanvas.height;
+  const px = pos.x * W;
+  const py = pos.y * H;
+
+  // ヒットテスト（自分以外のストロークも選択可能）
+  for (const stroke of strokes.values()) {
+    if (stroke.status === 'released') continue;
+    if (stroke.page !== currentPage) continue;
+    const threshold = stroke.lineWidth * scale / 2 + 10;
+    const hit = stroke.points.some(p =>
+      Math.hypot(p.x * W - px, p.y * H - py) < threshold
+    );
+    if (hit) {
+      if (selectedForRelease.has(stroke.id)) {
+        selectedForRelease.delete(stroke.id);
+      } else {
+        selectedForRelease.add(stroke.id);
+      }
+      break;
+    }
+  }
+  updateReleaseBanner();
+  redrawMarkup();
+}
+
+function updateReleaseBanner() {
+  const count = selectedForRelease.size;
+  releaseCount.textContent = count;
+  if (count > 0) {
+    releaseBanner.classList.add('visible');
+  } else {
+    releaseBanner.classList.remove('visible');
+  }
+}
+
+markupCanvas.addEventListener('mousedown', onPointerDown);
+markupCanvas.addEventListener('mousemove', onPointerMove);
+markupCanvas.addEventListener('mouseup', onPointerUp);
+markupCanvas.addEventListener('mouseleave', onPointerUp);
+markupCanvas.addEventListener('touchstart', onPointerDown, { passive: false });
+markupCanvas.addEventListener('touchmove', onPointerMove, { passive: false });
+markupCanvas.addEventListener('touchend', onPointerUp, { passive: false });
+
+// 長押し削除（自分のストローク）
+let longPressTimer = null;
+markupCanvas.addEventListener('touchstart', (e) => {
+  if (isReleaseMode || e.touches.length !== 1) return;
+  const pos = getCanvasPos(e);
+  const W = markupCanvas.width, H = markupCanvas.height;
+  const px = pos.x * W, py = pos.y * H;
+  longPressTimer = setTimeout(() => {
+    for (const stroke of strokes.values()) {
+      if (stroke.status === 'released') continue;
+      if (stroke.page !== currentPage) continue;
+      if (stroke.ownerId !== user.id) continue;
+      const threshold = stroke.lineWidth * scale / 2 + 12;
+      const hit = stroke.points.some(p =>
+        Math.hypot(p.x * W - px, p.y * H - py) < threshold
+      );
+      if (hit) {
+        if (confirm(`「${stroke.ownerName}」のマークを削除しますか？`)) {
+          socket.emit('stroke-remove', { strokeId: stroke.id, requesterId: user.id });
+        }
+        break;
+      }
+    }
+  }, 600);
+}, { passive: true });
+markupCanvas.addEventListener('touchend', () => {
+  clearTimeout(longPressTimer);
+}, { passive: true });
+
+// ===== ピンチズーム =====
+canvasArea.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2) {
+    pinchStartDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    pinchStartScale = scale;
+    isDrawing = false; activeStroke = null;
+  }
+}, { passive: true });
+
+canvasArea.addEventListener('touchmove', async (e) => {
+  if (e.touches.length === 2 && pinchStartDist !== null) {
+    e.preventDefault();
+    const dist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    let newScale = pinchStartScale * (dist / pinchStartDist);
+    newScale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, newScale));
+    scale = parseFloat(newScale.toFixed(2));
+    zoomLabel.textContent = Math.round(scale * 100) + '%';
+    await renderPage(currentPage);
+  }
+}, { passive: false });
+
+canvasArea.addEventListener('touchend', () => {
+  pinchStartDist = null;
+}, { passive: true });
+
+// ===== ツールバー操作 =====
+
+// カテゴリ
+catBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    catBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentCategory = btn.dataset.category;
+    if (currentCategory !== 'custom') {
+      colorPicker.value = CATEGORIES[currentCategory].hex;
+    }
+    currentTool = 'draw';
+    eraserBtn.classList.remove('active');
+    markupCanvas.className = '';
+  });
+});
+
+// カラーピッカー
+colorPicker.addEventListener('input', () => {
+  catBtns.forEach(b => b.classList.remove('active'));
+  document.getElementById('cat-custom').classList.add('active');
+  currentCategory = 'custom';
+  currentTool = 'draw';
+  eraserBtn.classList.remove('active');
+  markupCanvas.className = '';
+});
+
+function getCurrentColor() {
+  if (currentCategory === 'custom') {
+    const hex = colorPicker.value;
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    return `rgba(${r},${g},${b},0.45)`;
+  }
+  return CATEGORIES[currentCategory].color;
+}
+
+// 線幅
+lwBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    lwBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentLineWidth = parseInt(btn.dataset.lw);
+  });
+});
+
+// 消しゴム
+eraserBtn.addEventListener('click', () => {
+  if (currentTool === 'erase') {
+    currentTool = 'draw';
+    eraserBtn.classList.remove('active');
+    markupCanvas.className = '';
+  } else {
+    currentTool = 'erase';
+    eraserBtn.classList.add('active');
+    markupCanvas.className = 'eraser-mode';
+  }
+  if (isReleaseMode) exitReleaseMode();
+});
+
+// 解除モード
+releaseBtn.addEventListener('click', () => {
+  if (isReleaseMode) {
+    exitReleaseMode();
+  } else {
+    enterReleaseMode();
+  }
+});
+
+function enterReleaseMode() {
+  isReleaseMode = true;
+  releaseBtn.classList.add('active');
+  markupCanvas.className = 'select-mode';
+  currentTool = 'draw';
+  eraserBtn.classList.remove('active');
+  selectedForRelease.clear();
+  updateReleaseBanner();
+  showToast('マークをタップして選択してください');
+}
+
+function exitReleaseMode() {
+  isReleaseMode = false;
+  releaseBtn.classList.remove('active');
+  markupCanvas.className = '';
+  selectedForRelease.clear();
+  releaseBanner.classList.remove('visible');
+  redrawMarkup();
+}
+
+releaseConfirm.addEventListener('click', () => {
+  if (selectedForRelease.size === 0) return;
+  if (!confirm(`${selectedForRelease.size}件のマークを解除しますか？\n解除後は図面上に表示されなくなります。`)) return;
+  socket.emit('strokes-release', {
+    strokeIds: Array.from(selectedForRelease),
+    requesterId: user.id,
+    requesterRole: user.role,
+  });
+  exitReleaseMode();
+});
+
+releaseCancel.addEventListener('click', exitReleaseMode);
+
+// ===== ズームボタン =====
+zoomInBtn.addEventListener('click', async () => {
+  scale = Math.min(SCALE_MAX, parseFloat((scale + SCALE_STEP).toFixed(2)));
+  zoomLabel.textContent = Math.round(scale * 100) + '%';
+  await renderPage(currentPage);
+});
+zoomOutBtn.addEventListener('click', async () => {
+  scale = Math.max(SCALE_MIN, parseFloat((scale - SCALE_STEP).toFixed(2)));
+  zoomLabel.textContent = Math.round(scale * 100) + '%';
+  await renderPage(currentPage);
+});
+zoomResetBtn.addEventListener('click', async () => {
+  scale = 1.0;
+  zoomLabel.textContent = '100%';
+  await renderPage(currentPage);
+});
+
+// ===== ページナビ =====
+prevBtn.addEventListener('click', async () => {
+  if (currentPage > 1) { currentPage--; await renderPage(currentPage); }
+});
+nextBtn.addEventListener('click', async () => {
+  if (currentPage < totalPages) { currentPage++; await renderPage(currentPage); }
+});
+
+// ===== QRモーダル =====
+qrBtn.addEventListener('click', () => {
+  const url = location.href;
+  qrModalUrl.textContent = url;
+  qrModalCanvas.innerHTML = '';
+  new QRCode(qrModalCanvas, { text: url, width: 160, height: 160, correctLevel: QRCode.CorrectLevel.M });
+  qrModal.classList.add('visible');
+});
+qrModalClose.addEventListener('click', () => qrModal.classList.remove('visible'));
+qrModal.addEventListener('click', (e) => { if (e.target === qrModal) qrModal.classList.remove('visible'); });
+
+// ===== トースト =====
+let toastTimer = null;
+function showToast(msg, duration = 2500) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('visible'), duration);
+}
+
+// ===== 起動 =====
+initUser();
+</script>
+</body>
+</html>
