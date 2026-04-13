@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  maxHttpBufferSize: 50 * 1024 * 1024, // 50MB
+  maxHttpBufferSize: 50 * 1024 * 1024,
 });
 
 const PORT = process.env.PORT || 3000;
@@ -39,8 +39,7 @@ const upload = multer({
 });
 
 // --- セッション管理 (インメモリ) ---
-// sessions: Map<sessionId, Session>
-// Session: { id, pdfPath, pdfName, strokes: Map<strokeId, Stroke>, createdAt }
+// Session: { id, pdfPath, pdfName, pin, strokes: Map<strokeId, Stroke>, users: Map<socketId, {userId, name, role}>, createdAt }
 const sessions = new Map();
 
 // --- 静的ファイル ---
@@ -49,30 +48,36 @@ app.use(express.json());
 
 // --- REST API ---
 
-// セッション作成 (PDFアップロード)
+// セッション作成 (PDFアップロード + PIN設定)
 app.post('/api/sessions', upload.single('pdf'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'PDFファイルが必要です' });
+  }
+  const pin = (req.body.pin || '').trim();
+  if (!pin || pin.length < 4 || !/^\d+$/.test(pin)) {
+    return res.status(400).json({ error: 'PINは4桁以上の数字で入力してください' });
   }
   const sessionId = uuidv4();
   sessions.set(sessionId, {
     id: sessionId,
     pdfPath: req.file.path,
     pdfName: req.file.originalname,
+    pin,
     strokes: new Map(),
+    users: new Map(),  // socketId → { userId, name, role }
     createdAt: new Date().toISOString(),
   });
   res.json({ sessionId });
 });
 
-// セッション情報取得
+// セッション情報取得（PIN不要 - pdfName のみ公開）
 app.get('/api/sessions/:id', (req, res) => {
   const session = sessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'セッションが見つかりません' });
   res.json({ pdfName: session.pdfName, strokeCount: session.strokes.size });
 });
 
-// PDFファイル配信
+// PDFファイル配信（PIN検証はSocket.IO join後に行うためここでは省略）
 app.get('/api/sessions/:id/pdf', (req, res) => {
   const session = sessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'セッションが見つかりません' });
@@ -90,17 +95,28 @@ app.get('/session/:id', (req, res) => {
 
 io.on('connection', (socket) => {
   let currentSessionId = null;
-  let currentUser = null;
+  let currentUser = null;  // { userId, name, role } — サーバー側で管理
 
-  // セッション参加
-  socket.on('join-session', ({ sessionId, user }) => {
+  // セッション参加（PIN検証 + ユーザー登録）
+  socket.on('join-session', ({ sessionId, pin, user }) => {
     const session = sessions.get(sessionId);
     if (!session) {
-      socket.emit('error', { message: 'セッションが見つかりません' });
+      socket.emit('join-error', 'セッションが見つかりません');
       return;
     }
+    if (session.pin !== String(pin)) {
+      socket.emit('join-error', 'PINが正しくありません');
+      return;
+    }
+
     currentSessionId = sessionId;
-    currentUser = user;
+    // サーバー側でユーザー情報を正規化して保持（クライアントからのrole改ざんを防ぐ）
+    currentUser = {
+      userId: user.id,
+      name: user.name,
+      role: user.role,
+    };
+    session.users.set(socket.id, currentUser);
     socket.join(sessionId);
 
     // 現在の全ストロークを送信
@@ -110,23 +126,32 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ストローク追加
+  // ストローク追加（ownerIdはサーバー側で上書き）
   socket.on('stroke-add', (stroke) => {
     const session = sessions.get(currentSessionId);
-    if (!session) return;
+    if (!session || !currentUser) return;
+
+    // サーバー側でオーナー情報を確定（クライアントの自己申告を上書き）
+    stroke.ownerId   = currentUser.userId;
+    stroke.ownerName = currentUser.name;
+    stroke.ownerRole = currentUser.role;
+    stroke.status    = 'active';
+
     session.strokes.set(stroke.id, stroke);
     // 送信者以外にブロードキャスト
     socket.to(currentSessionId).emit('stroke-added', stroke);
   });
 
-  // ストローク削除 (自分のストロークのみ)
-  socket.on('stroke-remove', ({ strokeId, requesterId }) => {
+  // ストローク削除（サーバー側で所有者チェック）
+  socket.on('stroke-remove', ({ strokeId }) => {
     const session = sessions.get(currentSessionId);
-    if (!session) return;
+    if (!session || !currentUser) return;
+
     const stroke = session.strokes.get(strokeId);
     if (!stroke) return;
-    // 所有者チェック
-    if (stroke.ownerId !== requesterId) {
+
+    // サーバー側で所有者チェック（クライアント送信のrequesterIdは使わない）
+    if (stroke.ownerId !== currentUser.userId) {
       socket.emit('error', { message: '自分のストロークのみ削除できます' });
       return;
     }
@@ -134,33 +159,45 @@ io.on('connection', (socket) => {
     io.to(currentSessionId).emit('stroke-removed', { strokeId });
   });
 
-  // 解除 (線閉責任者のみ: status を released に変更)
-  socket.on('strokes-release', ({ strokeIds, requesterId, requesterRole }) => {
-    if (requesterRole !== '線閉責任者') {
+  // 解除（サーバー側で線閉責任者チェック）
+  socket.on('strokes-release', ({ strokeIds }) => {
+    const session = sessions.get(currentSessionId);
+    if (!session || !currentUser) return;
+
+    // サーバー側でロール検証（クライアント送信のrequesterRoleは使わない）
+    if (currentUser.role !== '線閉責任者') {
       socket.emit('error', { message: '線閉責任者のみ解除できます' });
       return;
     }
-    const session = sessions.get(currentSessionId);
-    if (!session) return;
+
     const releasedAt = new Date().toISOString();
-    const releasedName = currentUser ? currentUser.name : '不明';
+    const releasedName = currentUser.name;
+    const updated = [];
+
     strokeIds.forEach((strokeId) => {
       const stroke = session.strokes.get(strokeId);
-      if (stroke) {
-        stroke.status = 'released';
+      if (stroke && stroke.status === 'active') {
+        stroke.status     = 'released';
         stroke.releasedBy = releasedName;
         stroke.releasedAt = releasedAt;
+        updated.push(strokeId);
       }
     });
-    io.to(currentSessionId).emit('strokes-released', {
-      strokeIds,
-      releasedBy: releasedName,
-      releasedAt,
-    });
+
+    if (updated.length > 0) {
+      io.to(currentSessionId).emit('strokes-released', {
+        strokeIds: updated,
+        releasedBy: releasedName,
+        releasedAt,
+      });
+    }
   });
 
   socket.on('disconnect', () => {
-    // 将来的にユーザーリスト表示などに使用
+    if (currentSessionId) {
+      const session = sessions.get(currentSessionId);
+      if (session) session.users.delete(socket.id);
+    }
   });
 });
 

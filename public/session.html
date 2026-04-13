@@ -228,7 +228,13 @@
 <!-- ユーザー情報モーダル -->
 <div id="user-modal" style="display:none;">
   <div class="modal-box">
-    <h2>参加者情報の入力</h2>
+    <h2>セッションに参加</h2>
+    <div class="form-group">
+      <label for="session-pin">参加PIN</label>
+      <input type="tel" id="session-pin" placeholder="4桁以上の数字" maxlength="8"
+        inputmode="numeric" pattern="[0-9]*"
+        style="letter-spacing:0.25em;text-align:center;font-size:20px;font-weight:700;">
+    </div>
     <div class="form-group">
       <label for="user-name">氏名</label>
       <input type="text" id="user-name" placeholder="例：田中 太郎" autocomplete="off">
@@ -242,6 +248,7 @@
         <option value="その他">その他</option>
       </select>
     </div>
+    <div id="join-error" style="display:none;padding:8px 12px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;font-size:13px;color:#dc2626;margin-bottom:8px;"></div>
     <button class="btn-start" id="user-start-btn">セッションに参加</button>
   </div>
 </div>
@@ -279,6 +286,9 @@
 
     <!-- 消しゴム -->
     <button class="tool-btn" id="eraser-btn">消しゴム</button>
+
+    <!-- 元に戻す -->
+    <button class="tool-btn" id="undo-btn" title="直前の自分のストロークを削除">↩ 戻す</button>
 
     <!-- 解除（線閉責任者のみ表示） -->
     <button class="tool-btn" id="release-btn" style="display:none;">解除</button>
@@ -369,6 +379,9 @@ const SCALE_MAX = 4.0;
 // strokesはMap<strokeId, stroke>
 const strokes = new Map();
 
+// 自分が追加したストロークのID履歴（undo用）
+const myStrokeHistory = [];
+
 // 描画中ストローク
 let activeStroke = null;
 let isDrawing = false;
@@ -395,6 +408,7 @@ const catBtns       = document.querySelectorAll('.cat-btn');
 const colorPicker   = document.getElementById('color-picker');
 const lwBtns        = document.querySelectorAll('.lw-btn');
 const eraserBtn     = document.getElementById('eraser-btn');
+const undoBtn       = document.getElementById('undo-btn');
 const releaseBtn    = document.getElementById('release-btn');
 const zoomInBtn     = document.getElementById('zoom-in-btn');
 const zoomOutBtn    = document.getElementById('zoom-out-btn');
@@ -431,6 +445,14 @@ socket.on('disconnect', () => {
   connBadge.className = 'disconnected';
 });
 
+socket.on('join-error', (message) => {
+  const errEl = document.getElementById('join-error');
+  errEl.textContent = message;
+  errEl.style.display = 'block';
+  loading.classList.add('hidden');
+  userModal.style.display = 'flex';
+});
+
 socket.on('session-state', ({ strokes: remoteStrokes }) => {
   strokes.clear();
   remoteStrokes.forEach(s => strokes.set(s.id, s));
@@ -461,7 +483,7 @@ socket.on('strokes-released', ({ strokeIds, releasedBy }) => {
 socket.on('error', ({ message }) => showToast(message));
 
 function joinSession() {
-  socket.emit('join-session', { sessionId: SESSION_ID, user });
+  socket.emit('join-session', { sessionId: SESSION_ID, pin: user.pin, user });
 }
 
 // ===== ユーザー情報 =====
@@ -476,28 +498,41 @@ function saveUser(u) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
 }
 
+const sessionPinInput = document.getElementById('session-pin');
+
 function initUser() {
+  // PIN は毎回入力必須（セッション固有のため保存しない）
   const stored = loadUser();
+  loading.classList.add('hidden');
+  userModal.style.display = 'flex';
   if (stored && stored.name) {
-    user = stored;
-    applyUserRole();
-    startSession();
-  } else {
-    loading.classList.add('hidden');
-    userModal.style.display = 'flex';
-    userNameInput.focus();
+    userNameInput.value = stored.name;
+    userRoleSelect.value = stored.role || '検修責任者';
   }
+  sessionPinInput.focus();
 }
 
 userStartBtn.addEventListener('click', () => {
+  const pin = sessionPinInput.value.trim();
   const name = userNameInput.value.trim();
+  const errEl = document.getElementById('join-error');
+  errEl.style.display = 'none';
+
+  if (!pin || pin.length < 4) {
+    sessionPinInput.focus();
+    errEl.textContent = 'PINを4桁以上入力してください';
+    errEl.style.display = 'block';
+    return;
+  }
   if (!name) { userNameInput.focus(); return; }
+
   user = {
     id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36),
     name,
     role: userRoleSelect.value,
+    pin,
   };
-  saveUser(user);
+  saveUser({ name, role: userRoleSelect.value });  // PINはlocalStorageに保存しない
   userModal.style.display = 'none';
   loading.classList.remove('hidden');
   applyUserRole();
@@ -626,8 +661,8 @@ function getCanvasPos(e) {
     clientY = e.clientY;
   }
   return {
-    x: (clientX - rect.left) / markupCanvas.width,
-    y: (clientY - rect.top)  / markupCanvas.height,
+    x: (clientX - rect.left) / rect.width,   // rect.width = CSSサイズ（高DPI対応）
+    y: (clientY - rect.top)  / rect.height,
   };
 }
 
@@ -669,6 +704,7 @@ function onPointerUp(e) {
   isDrawing = false;
   if (activeStroke.points.length >= 2) {
     strokes.set(activeStroke.id, activeStroke);
+    myStrokeHistory.push(activeStroke.id);
     socket.emit('stroke-add', activeStroke);
   }
   activeStroke = null;
@@ -844,6 +880,20 @@ eraserBtn.addEventListener('click', () => {
   if (isReleaseMode) exitReleaseMode();
 });
 
+// 元に戻す（直前の自分のストロークを削除）
+undoBtn.addEventListener('click', () => {
+  // 末尾から有効なストロークを探して削除
+  while (myStrokeHistory.length > 0) {
+    const lastId = myStrokeHistory.pop();
+    const stroke = strokes.get(lastId);
+    if (stroke && stroke.status === 'active') {
+      socket.emit('stroke-remove', { strokeId: lastId });
+      return;
+    }
+  }
+  showToast('元に戻せるストロークがありません');
+});
+
 // 解除モード
 releaseBtn.addEventListener('click', () => {
   if (isReleaseMode) {
@@ -878,8 +928,6 @@ releaseConfirm.addEventListener('click', () => {
   if (!confirm(`${selectedForRelease.size}件のマークを解除しますか？\n解除後は図面上に表示されなくなります。`)) return;
   socket.emit('strokes-release', {
     strokeIds: Array.from(selectedForRelease),
-    requesterId: user.id,
-    requesterRole: user.role,
   });
   exitReleaseMode();
 });

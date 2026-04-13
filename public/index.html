@@ -219,6 +219,14 @@
       <div class="file-selected" id="file-selected"></div>
     </div>
 
+    <div style="margin-top:20px;">
+      <label for="pin-input">参加PIN（4桁以上の数字）</label>
+      <input type="tel" id="pin-input" placeholder="例：1234" maxlength="8"
+        style="width:100%;padding:10px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:18px;letter-spacing:0.2em;text-align:center;margin-top:8px;min-height:48px;outline:none;"
+        inputmode="numeric" pattern="[0-9]*">
+      <p style="font-size:12px;color:#9ca3af;margin-top:4px;">QRコードと一緒に作業員へ伝えてください</p>
+    </div>
+
     <button class="btn-primary" id="create-btn" disabled>セッションを作成</button>
     <div class="progress-bar" id="progress-bar">
       <div class="progress-fill" id="progress-fill"></div>
@@ -227,6 +235,10 @@
 
     <div class="result-card" id="result-card">
       <h2>✅ セッション作成完了</h2>
+      <div id="pin-display" style="background:#fef9c3;border:1.5px solid #fde047;border-radius:8px;padding:10px 16px;margin-bottom:14px;text-align:center;">
+        <span style="font-size:13px;color:#713f12;font-weight:600;">参加PIN：</span>
+        <span id="session-pin" style="font-size:28px;font-weight:900;letter-spacing:0.25em;color:#92400e;font-family:monospace;"></span>
+      </div>
       <div class="url-box">
         <span class="url-text" id="session-url"></span>
         <button class="btn-copy" id="copy-btn">コピー</button>
@@ -254,7 +266,17 @@
     const openBtn = document.getElementById('open-btn');
     const qrcodeDiv = document.getElementById('qrcode');
 
+    const pinInput = document.getElementById('pin-input');
     let selectedFile = null;
+
+    function checkReady() {
+      createBtn.disabled = !(selectedFile && pinInput.value.length >= 4);
+    }
+
+    pinInput.addEventListener('input', () => {
+      pinInput.value = pinInput.value.replace(/\D/g, '');
+      checkReady();
+    });
 
     pdfInput.addEventListener('change', () => {
       if (pdfInput.files[0]) selectFile(pdfInput.files[0]);
@@ -276,7 +298,7 @@
     function selectFile(file) {
       selectedFile = file;
       fileSelected.textContent = `📎 ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
-      createBtn.disabled = false;
+      checkReady();
       hideError();
       resultCard.style.display = 'none';
     }
@@ -288,8 +310,16 @@
       progressBar.style.display = 'block';
       progressFill.style.width = '10%';
 
+      const pin = pinInput.value.trim();
+      if (pin.length < 4) {
+        showError('PINは4桁以上の数字で入力してください');
+        createBtn.disabled = false;
+        progressBar.style.display = 'none';
+        return;
+      }
       const formData = new FormData();
       formData.append('pdf', selectedFile);
+      formData.append('pin', pin);
 
       try {
         progressFill.style.width = '40%';
@@ -306,6 +336,7 @@
         const url = `${location.origin}/session/${sessionId}`;
         sessionUrl.textContent = url;
         openBtn.href = url;
+        document.getElementById('session-pin').textContent = pin;
 
         // QRコード生成
         qrcodeDiv.innerHTML = '';
