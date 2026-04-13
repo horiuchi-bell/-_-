@@ -171,6 +171,21 @@
     #release-confirm { padding: 8px 16px; background: #dc2626; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; }
     #release-cancel  { padding: 8px 16px; background: #374151; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
 
+    /* ===== 削除確認バナー ===== */
+    #delete-banner {
+      display: none; position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%);
+      z-index: 201; background: #1e3a5f; color: #fff;
+      padding: 10px 18px; border-radius: 12px;
+      font-size: 14px; font-weight: 700;
+      align-items: center; gap: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      white-space: nowrap;
+    }
+    #delete-banner.visible { display: flex; }
+    #delete-target-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+    #delete-confirm-btn { padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; }
+    #delete-cancel-btn  { padding: 8px 16px; background: #374151; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+
     /* ===== QRモーダル ===== */
     #qr-modal {
       display: none; position: fixed; inset: 0; z-index: 500;
@@ -293,6 +308,17 @@
     <!-- 解除（線閉責任者のみ表示） -->
     <button class="tool-btn" id="release-btn" style="display:none;">解除</button>
 
+    <!-- 解除済み表示トグル -->
+    <button class="tool-btn active" id="toggle-released-btn" title="解除済みマークの表示/非表示">解除済み表示</button>
+
+    <div class="tb-sep"></div>
+
+    <!-- ページ別アクティブ件数バッジ -->
+    <span id="stroke-badge" title="このページのアクティブなマーク数"
+      style="font-size:12px;color:#94a3b8;min-width:44px;text-align:center;flex-shrink:0;line-height:1.2;">
+      マーク<br><span id="stroke-count" style="font-size:16px;font-weight:700;color:#e2e8f0;">0</span>
+    </span>
+
     <div class="tb-sep"></div>
 
     <!-- ズーム -->
@@ -324,6 +350,13 @@
   <span><span id="release-count">0</span>件選択中</span>
   <button id="release-confirm">解除を確定</button>
   <button id="release-cancel">キャンセル</button>
+</div>
+
+<!-- 削除確認バナー -->
+<div id="delete-banner">
+  <span>🗑 <span id="delete-target-name"></span> を削除</span>
+  <button id="delete-confirm-btn">削除</button>
+  <button id="delete-cancel-btn">キャンセル</button>
 </div>
 
 <!-- 接続状態バッジ -->
@@ -382,6 +415,9 @@ const strokes = new Map();
 // 自分が追加したストロークのID履歴（undo用）
 const myStrokeHistory = [];
 
+// 解除済みストローク表示フラグ
+let showReleased = true;
+
 // 描画中ストローク
 let activeStroke = null;
 let isDrawing = false;
@@ -409,7 +445,9 @@ const colorPicker   = document.getElementById('color-picker');
 const lwBtns        = document.querySelectorAll('.lw-btn');
 const eraserBtn     = document.getElementById('eraser-btn');
 const undoBtn       = document.getElementById('undo-btn');
-const releaseBtn    = document.getElementById('release-btn');
+const releaseBtn          = document.getElementById('release-btn');
+const toggleReleasedBtn   = document.getElementById('toggle-released-btn');
+const strokeCountEl       = document.getElementById('stroke-count');
 const zoomInBtn     = document.getElementById('zoom-in-btn');
 const zoomOutBtn    = document.getElementById('zoom-out-btn');
 const zoomResetBtn  = document.getElementById('zoom-reset-btn');
@@ -467,6 +505,9 @@ socket.on('stroke-added', (stroke) => {
 
 socket.on('stroke-removed', ({ strokeId }) => {
   strokes.delete(strokeId);
+  // undo 用履歴からも削除（他端末からの削除通知にも対応）
+  const idx = myStrokeHistory.indexOf(strokeId);
+  if (idx !== -1) myStrokeHistory.splice(idx, 1);
   redrawMarkup();
 });
 
@@ -595,6 +636,28 @@ function redrawMarkup() {
   const W = markupCanvas.width;
   const H = markupCanvas.height;
 
+  // --- バッジ更新 ---
+  const activeCount = [...strokes.values()].filter(
+    s => s.status === 'active' && s.page === currentPage
+  ).length;
+  strokeCountEl.textContent = activeCount;
+
+  // --- パス1: released ストローク（薄いグレーで残像表示）---
+  if (showReleased) {
+    markupCtx.globalCompositeOperation = 'source-over';
+    for (const stroke of strokes.values()) {
+      if (stroke.status !== 'released') continue;
+      if (stroke.page !== currentPage) continue;
+      if (stroke.tool === 'erase') continue;
+      markupCtx.strokeStyle = 'rgba(150,150,150,0.25)';
+      markupCtx.lineWidth = stroke.lineWidth * scale;
+      markupCtx.lineCap = 'round';
+      markupCtx.lineJoin = 'round';
+      drawStrokePath(markupCtx, stroke.points, W, H);
+    }
+  }
+
+  // --- パス2: active ストローク ---
   for (const stroke of strokes.values()) {
     if (stroke.status === 'released') continue;
     if (stroke.page !== currentPage) continue;
@@ -606,24 +669,17 @@ function redrawMarkup() {
       markupCtx.strokeStyle = 'rgba(0,0,0,1)';
     } else {
       markupCtx.globalCompositeOperation = 'source-over';
-      if (isSelected) {
-        // 選択中はハイライト
-        markupCtx.strokeStyle = 'rgba(255,255,0,0.9)';
-      } else {
-        markupCtx.strokeStyle = stroke.color;
-      }
+      markupCtx.strokeStyle = isSelected ? 'rgba(255,255,0,0.9)' : stroke.color;
     }
     markupCtx.lineWidth = stroke.lineWidth * scale;
     markupCtx.lineCap = 'round';
     markupCtx.lineJoin = 'round';
-
     drawStrokePath(markupCtx, stroke.points, W, H);
   }
   markupCtx.globalCompositeOperation = 'source-over';
 
-  // 描画中ストローク（プレビュー）
+  // --- パス3: 描画中プレビュー ---
   if (activeStroke && activeStroke.points.length > 1) {
-    const W = markupCanvas.width, H = markupCanvas.height;
     if (activeStroke.tool === 'erase') {
       markupCtx.globalCompositeOperation = 'destination-out';
       markupCtx.strokeStyle = 'rgba(0,0,0,1)';
@@ -667,6 +723,7 @@ function getCanvasPos(e) {
 }
 
 function onPointerDown(e) {
+  if (!user) return;                               // 未参加ならスキップ
   if (e.touches && e.touches.length === 2) return; // ピンチ開始は別処理
   if (isReleaseMode) {
     handleReleaseSelect(e);
@@ -692,7 +749,7 @@ function onPointerDown(e) {
 
 function onPointerMove(e) {
   if (!isDrawing || !activeStroke) return;
-  if (e.touches && e.touches.length === 2) return;
+  if (e.touches && e.touches.length !== 1) return; // 2本指になったら中断
   e.preventDefault();
   const pos = getCanvasPos(e);
   activeStroke.points.push(pos);
@@ -700,14 +757,16 @@ function onPointerMove(e) {
 }
 
 function onPointerUp(e) {
-  if (!isDrawing || !activeStroke) return;
+  if (!isDrawing) return;
   isDrawing = false;
-  if (activeStroke.points.length >= 2) {
-    strokes.set(activeStroke.id, activeStroke);
-    myStrokeHistory.push(activeStroke.id);
-    socket.emit('stroke-add', activeStroke);
+  if (activeStroke) {
+    if (activeStroke.points.length >= 2) {
+      strokes.set(activeStroke.id, activeStroke);
+      myStrokeHistory.push(activeStroke.id);
+      socket.emit('stroke-add', activeStroke);
+    }
+    activeStroke = null;
   }
-  activeStroke = null;
   redrawMarkup();
 }
 
@@ -759,6 +818,30 @@ markupCanvas.addEventListener('touchstart', onPointerDown, { passive: false });
 markupCanvas.addEventListener('touchmove', onPointerMove, { passive: false });
 markupCanvas.addEventListener('touchend', onPointerUp, { passive: false });
 
+// ===== 削除確認バナー =====
+const deleteBanner     = document.getElementById('delete-banner');
+const deleteTargetName = document.getElementById('delete-target-name');
+const deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+const deleteCancelBtn  = document.getElementById('delete-cancel-btn');
+let pendingDeleteId = null;
+
+function showDeleteBanner(stroke) {
+  pendingDeleteId = stroke.id;
+  deleteTargetName.textContent = `${stroke.ownerName}（${stroke.ownerRole}）のマーク`;
+  deleteBanner.classList.add('visible');
+}
+function hideDeleteBanner() {
+  pendingDeleteId = null;
+  deleteBanner.classList.remove('visible');
+}
+deleteConfirmBtn.addEventListener('click', () => {
+  if (pendingDeleteId) {
+    socket.emit('stroke-remove', { strokeId: pendingDeleteId });
+  }
+  hideDeleteBanner();
+});
+deleteCancelBtn.addEventListener('click', hideDeleteBanner);
+
 // 長押し削除（自分のストローク）
 let longPressTimer = null;
 markupCanvas.addEventListener('touchstart', (e) => {
@@ -776,9 +859,9 @@ markupCanvas.addEventListener('touchstart', (e) => {
         Math.hypot(p.x * W - px, p.y * H - py) < threshold
       );
       if (hit) {
-        if (confirm(`「${stroke.ownerName}」のマークを削除しますか？`)) {
-          socket.emit('stroke-remove', { strokeId: stroke.id, requesterId: user.id });
-        }
+        // バイブレーションフィードバック（対応端末のみ）
+        if (navigator.vibrate) navigator.vibrate(60);
+        showDeleteBanner(stroke);
         break;
       }
     }
@@ -925,7 +1008,7 @@ function exitReleaseMode() {
 
 releaseConfirm.addEventListener('click', () => {
   if (selectedForRelease.size === 0) return;
-  if (!confirm(`${selectedForRelease.size}件のマークを解除しますか？\n解除後は図面上に表示されなくなります。`)) return;
+  // confirm() は使わずそのまま実行（バナー自体が確認ステップ）
   socket.emit('strokes-release', {
     strokeIds: Array.from(selectedForRelease),
   });
@@ -933,6 +1016,14 @@ releaseConfirm.addEventListener('click', () => {
 });
 
 releaseCancel.addEventListener('click', exitReleaseMode);
+
+// 解除済み表示トグル
+toggleReleasedBtn.addEventListener('click', () => {
+  showReleased = !showReleased;
+  toggleReleasedBtn.classList.toggle('active', showReleased);
+  toggleReleasedBtn.textContent = showReleased ? '解除済み表示' : '解除済み非表示';
+  redrawMarkup();
+});
 
 // ===== ズームボタン =====
 zoomInBtn.addEventListener('click', async () => {

@@ -17,6 +17,8 @@ const io = new Server(httpServer, {
 });
 
 const PORT = process.env.PORT || 3000;
+// セッションの有効期限（ミリ秒）。デフォルト 24 時間
+const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_HOURS || '24', 10) * 60 * 60 * 1000;
 
 // --- ストレージ設定 ---
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -89,6 +91,19 @@ app.get('/api/sessions/:id/pdf', (req, res) => {
 // セッションページ
 app.get('/session/:id', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'session.html'));
+});
+
+// ヘルスチェック
+app.get('/health', (req, res) => {
+  const now = Date.now();
+  const activeSessions = [...sessions.values()].filter(
+    (s) => now - new Date(s.createdAt).getTime() < SESSION_TTL_MS
+  );
+  res.json({
+    status: 'ok',
+    sessions: activeSessions.length,
+    uptime: Math.floor(process.uptime()),
+  });
 });
 
 // --- Socket.IO ---
@@ -200,6 +215,21 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+// --- セッション自動クリーンアップ（1時間ごと）---
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [id, session] of sessions) {
+    if (now - new Date(session.createdAt).getTime() > SESSION_TTL_MS) {
+      sessions.delete(id);
+      // PDFファイルも削除
+      fs.unlink(session.pdfPath, () => {});
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) console.log(`[cleanup] ${cleaned} 件の期限切れセッションを削除しました`);
+}, 60 * 60 * 1000);
 
 // --- サーバー起動 ---
 httpServer.listen(PORT, () => {
